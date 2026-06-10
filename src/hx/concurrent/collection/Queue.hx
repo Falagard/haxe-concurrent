@@ -33,6 +33,29 @@ class Queue<T> {
       #end
    }
 
+   // ── HL GC reference-counted disable ──────────────────────────────────────
+   // hl.Gc.enable() is a global process-wide flag. When multiple threads call
+   // pop/push simultaneously each thread's enable(true) can re-enable the GC
+   // while another thread is still inside its protected section, causing SIGNAL 11
+   // crashes in ArrayDyn.alloc. A reference count ensures the GC stays disabled
+   // until every concurrent protected section has exited.
+   #if hl
+   static var _gcMutex = new sys.thread.Mutex();
+   static var _gcDisableCount:Int = 0;
+
+   static inline function _hlGcDisable():Void {
+      _gcMutex.acquire();
+      if (_gcDisableCount++ == 0) hl.Gc.enable(false);
+      _gcMutex.release();
+   }
+
+   static inline function _hlGcEnable():Void {
+      _gcMutex.acquire();
+      if (--_gcDisableCount == 0) hl.Gc.enable(true);
+      _gcMutex.release();
+   }
+   #end
+
 
    #if threads
    /**
@@ -53,9 +76,9 @@ class Queue<T> {
 
       if (timeoutMS == 0) {
          #if (cpp || cs || (threads && eval) || java || neko || hl)
-            #if hl hl.Gc.enable(false); #end
+            #if hl _hlGcDisable(); #end
             msg = _queue.pop(false);
-            #if hl hl.Gc.enable(true); #end
+            #if hl _hlGcEnable(); #end
          #elseif python
             msg = try _queue.popleft() catch (ex) null;
          #else
@@ -66,9 +89,9 @@ class Queue<T> {
       } else {
           Threads.await(function() {
             #if (cpp || cs || (threads && eval) || java || neko || hl)
-               #if hl hl.Gc.enable(false); #end
+               #if hl _hlGcDisable(); #end
                msg = _queue.pop(false);
-               #if hl hl.Gc.enable(true); #end
+               #if hl _hlGcEnable(); #end
             #elseif python
                msg = try _queue.popleft() catch (ex) null;
             #else
@@ -103,9 +126,9 @@ class Queue<T> {
          throw "[msg] must not be null";
 
       #if (cpp || cs || (threads && eval) || java || neko || hl)
-         #if hl hl.Gc.enable(false); #end
+         #if hl _hlGcDisable(); #end
          _queue.push(msg);
-         #if hl hl.Gc.enable(true); #end
+         #if hl _hlGcEnable(); #end
       #elseif python
          _queue.appendleft(msg);
       #else
@@ -127,9 +150,9 @@ class Queue<T> {
          throw "[msg] must not be null";
 
       #if (cpp || cs || (threads && eval) || java || neko || hl)
-         #if hl hl.Gc.enable(false); #end
+         #if hl _hlGcDisable(); #end
          _queue.add(msg);
-         #if hl hl.Gc.enable(true); #end
+         #if hl _hlGcEnable(); #end
       #elseif python
          _queue.append(msg);
       #else
