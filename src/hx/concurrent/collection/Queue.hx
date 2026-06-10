@@ -53,7 +53,9 @@ class Queue<T> {
 
       if (timeoutMS == 0) {
          #if (cpp || cs || (threads && eval) || java || neko || hl)
+            #if hl hl.Gc.enable(false); #end
             msg = _queue.pop(false);
+            #if hl hl.Gc.enable(true); #end
          #elseif python
             msg = try _queue.popleft() catch (ex) null;
          #else
@@ -64,7 +66,9 @@ class Queue<T> {
       } else {
           Threads.await(function() {
             #if (cpp || cs || (threads && eval) || java || neko || hl)
+               #if hl hl.Gc.enable(false); #end
                msg = _queue.pop(false);
+               #if hl hl.Gc.enable(true); #end
             #elseif python
                msg = try _queue.popleft() catch (ex) null;
             #else
@@ -99,7 +103,9 @@ class Queue<T> {
          throw "[msg] must not be null";
 
       #if (cpp || cs || (threads && eval) || java || neko || hl)
+         #if hl hl.Gc.enable(false); #end
          _queue.push(msg);
+         #if hl hl.Gc.enable(true); #end
       #elseif python
          _queue.appendleft(msg);
       #else
@@ -121,7 +127,9 @@ class Queue<T> {
          throw "[msg] must not be null";
 
       #if (cpp || cs || (threads && eval) || java || neko || hl)
+         #if hl hl.Gc.enable(false); #end
          _queue.add(msg);
+         #if hl hl.Gc.enable(true); #end
       #elseif python
          _queue.append(msg);
       #else
