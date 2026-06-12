@@ -69,16 +69,19 @@ class Queue<T> {
     * If <code>timeoutMS</code> is set to value lower than -1, results in an exception.
     */
    public function pop(timeoutMS:Int = 0):Null<T> {
+      // GC must be disabled at function entry: HL inserts a GC safepoint here,
+      // before the inner _hlGcDisable() inside the if-branch is reached.
+      #if hl _hlGcDisable(); #end
       var msg:Null<T> = null;
 
-      if (timeoutMS < -1)
+      if (timeoutMS < -1) {
+         #if hl _hlGcEnable(); #end
          throw "[timeoutMS] must be >= -1";
+      }
 
       if (timeoutMS == 0) {
          #if (cpp || cs || (threads && eval) || java || neko || hl)
-            #if hl _hlGcDisable(); #end
             msg = _queue.pop(false);
-            #if hl _hlGcEnable(); #end
          #elseif python
             msg = try _queue.popleft() catch (ex) null;
          #else
@@ -87,7 +90,9 @@ class Queue<T> {
             _queueLock.release();
          #end
       } else {
-          Threads.await(function() {
+         // Re-enable GC during blocking wait — can't hold it disabled indefinitely.
+         #if hl _hlGcEnable(); #end
+         Threads.await(function() {
             #if (cpp || cs || (threads && eval) || java || neko || hl)
                #if hl _hlGcDisable(); #end
                msg = _queue.pop(false);
@@ -101,8 +106,12 @@ class Queue<T> {
             #end
             return msg != null;
          }, timeoutMS);
+         // GC already re-enabled before Threads.await; return without double-enable.
+         if (msg != null) _length--;
+         return msg;
       }
       if (msg != null) _length--;
+      #if hl _hlGcEnable(); #end
       return msg;
    }
    #else
