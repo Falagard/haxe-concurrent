@@ -13,8 +13,15 @@ import hx.concurrent.thread.Threads;
  * Unbound thread-safe first-in-first-out message queue.
  */
 class Queue<T> {
-   #if (cpp || cs || (threads && eval) || java || neko || hl)
+   // On HL, sys.thread.Deque uses ArrayDyn internally. ArrayDyn.alloc can trigger the
+   // GC mid-operation, corrupting the deque under concurrent access. We use a plain
+   // List<T> guarded by a Mutex instead: linked-list pop/push never call ArrayDyn.alloc,
+   // and the mutex ensures only one thread touches the list at a time.
+   #if (cpp || cs || (threads && eval) || java || neko)
       final _queue = new sys.thread.Deque<T>();
+   #elseif hl
+      final _queue = new List<T>();
+      final _queueLock = new sys.thread.Mutex();
    #elseif python
       final _queue:Dynamic;
    #else
@@ -33,29 +40,6 @@ class Queue<T> {
       #end
    }
 
-   // ── HL GC reference-counted disable ──────────────────────────────────────
-   // hl.Gc.enable() is a global process-wide flag. When multiple threads call
-   // pop/push simultaneously each thread's enable(true) can re-enable the GC
-   // while another thread is still inside its protected section, causing SIGNAL 11
-   // crashes in ArrayDyn.alloc. A reference count ensures the GC stays disabled
-   // until every concurrent protected section has exited.
-   #if hl
-   static var _gcMutex = new sys.thread.Mutex();
-   static var _gcDisableCount:Int = 0;
-
-   static inline function _hlGcDisable():Void {
-      _gcMutex.acquire();
-      if (_gcDisableCount++ == 0) hl.Gc.enable(false);
-      _gcMutex.release();
-   }
-
-   static inline function _hlGcEnable():Void {
-      _gcMutex.acquire();
-      if (--_gcDisableCount == 0) hl.Gc.enable(true);
-      _gcMutex.release();
-   }
-   #end
-
 
    #if threads
    /**
@@ -69,19 +53,18 @@ class Queue<T> {
     * If <code>timeoutMS</code> is set to value lower than -1, results in an exception.
     */
    public function pop(timeoutMS:Int = 0):Null<T> {
-      // GC must be disabled at function entry: HL inserts a GC safepoint here,
-      // before the inner _hlGcDisable() inside the if-branch is reached.
-      #if hl _hlGcDisable(); #end
       var msg:Null<T> = null;
 
-      if (timeoutMS < -1) {
-         #if hl _hlGcEnable(); #end
+      if (timeoutMS < -1)
          throw "[timeoutMS] must be >= -1";
-      }
 
       if (timeoutMS == 0) {
-         #if (cpp || cs || (threads && eval) || java || neko || hl)
+         #if (cpp || cs || (threads && eval) || java || neko)
             msg = _queue.pop(false);
+         #elseif hl
+            _queueLock.acquire();
+            msg = _queue.pop();
+            _queueLock.release();
          #elseif python
             msg = try _queue.popleft() catch (ex) null;
          #else
@@ -90,13 +73,13 @@ class Queue<T> {
             _queueLock.release();
          #end
       } else {
-         // Re-enable GC during blocking wait — can't hold it disabled indefinitely.
-         #if hl _hlGcEnable(); #end
          Threads.await(function() {
-            #if (cpp || cs || (threads && eval) || java || neko || hl)
-               #if hl _hlGcDisable(); #end
+            #if (cpp || cs || (threads && eval) || java || neko)
                msg = _queue.pop(false);
-               #if hl _hlGcEnable(); #end
+            #elseif hl
+               _queueLock.acquire();
+               msg = _queue.pop();
+               _queueLock.release();
             #elseif python
                msg = try _queue.popleft() catch (ex) null;
             #else
@@ -106,12 +89,10 @@ class Queue<T> {
             #end
             return msg != null;
          }, timeoutMS);
-         // GC already re-enabled before Threads.await; return without double-enable.
          if (msg != null) _length--;
          return msg;
       }
       if (msg != null) _length--;
-      #if hl _hlGcEnable(); #end
       return msg;
    }
    #else
@@ -134,10 +115,12 @@ class Queue<T> {
       if (msg == null)
          throw "[msg] must not be null";
 
-      #if (cpp || cs || (threads && eval) || java || neko || hl)
-         #if hl _hlGcDisable(); #end
+      #if (cpp || cs || (threads && eval) || java || neko)
          _queue.push(msg);
-         #if hl _hlGcEnable(); #end
+      #elseif hl
+         _queueLock.acquire();
+         _queue.push(msg);
+         _queueLock.release();
       #elseif python
          _queue.appendleft(msg);
       #else
@@ -158,10 +141,12 @@ class Queue<T> {
       if (msg == null)
          throw "[msg] must not be null";
 
-      #if (cpp || cs || (threads && eval) || java || neko || hl)
-         #if hl _hlGcDisable(); #end
+      #if (cpp || cs || (threads && eval) || java || neko)
          _queue.add(msg);
-         #if hl _hlGcEnable(); #end
+      #elseif hl
+         _queueLock.acquire();
+         _queue.add(msg);
+         _queueLock.release();
       #elseif python
          _queue.append(msg);
       #else
